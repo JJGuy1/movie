@@ -1,226 +1,134 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import random
-import string
+import requests
 import json
 import os
 
-# Имя файла для сохранения истории
-HISTORY_FILE = "password_history.json"
+# --- Настройки ---
+API_URL = "https://api.exchangerate-api.com/v4/latest/"
+HISTORY_FILE = "history.json"
 
-class PasswordGeneratorApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Random Password Generator")
-        self.root.geometry("750x500")
-        self.root.resizable(True, True)
+# --- Функции ---
 
-        # Переменные для хранения состояния
-        self.password_length = tk.IntVar(value=12)
-        self.use_digits = tk.BooleanVar(value=True)
-        self.use_letters = tk.BooleanVar(value=True)
-        self.use_symbols = tk.BooleanVar(value=True)
+def load_history():
+    """Загружает историю из файла JSON."""
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
 
-        # История паролей (список словарей)
-        self.history = []
+def save_history(entry):
+    """Сохраняет новую запись в историю."""
+    history = load_history()
+    history.append(entry)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
-        # Загрузка истории из файла
-        self.load_history()
+def update_history_table():
+    """Обновляет таблицу истории в GUI."""
+    for i in history_tree.get_children():
+        history_tree.delete(i)
+    for item in load_history():
+        history_tree.insert("", "end", values=(
+            item["from"],
+            item["to"],
+            f"{item['amount']:.2f}",
+            f"{item['result']:.2f}"
+        ))
 
-        # Создание интерфейса
-        self.create_widgets()
+def is_valid_amount(value):
+    """Проверяет, что введённое значение — положительное число."""
+    try:
+        amount = float(value)
+        return amount > 0
+    except ValueError:
+        return False
 
-        # Обновление отображения истории
-        self.refresh_history_table()
+def get_exchange_rate(base_currency, target_currency):
+    """Запрашивает курс обмена у внешнего API."""
+    try:
+        response = requests.get(f"{API_URL}{base_currency}")
+        response.raise_for_status()
+        data = response.json()
+        return data["rates"][target_currency]
+    except (requests.RequestException, KeyError) as e:
+        messagebox.showerror("Ошибка API", f"Не удалось получить курс валют: {e}")
+        return None
 
-    def create_widgets(self):
-        # Рамка для настроек
-        settings_frame = ttk.LabelFrame(self.root, text="Настройки пароля", padding=10)
-        settings_frame.pack(fill="x", padx=10, pady=5)
+def convert_currency():
+    """Основная функция конвертации."""
+    from_cur = from_currency.get()
+    to_cur = to_currency.get()
+    amount_str = amount_entry.get()
 
-        # Ползунок длины пароля
-        ttk.Label(settings_frame, text="Длина пароля:").grid(row=0, column=0, sticky="w", pady=5)
-        self.length_scale = ttk.Scale(settings_frame, from_=4, to=32, variable=self.password_length, orient="horizontal")
-        self.length_scale.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
-        self.length_label = ttk.Label(settings_frame, text="12")
-        self.length_label.grid(row=0, column=2, padx=5)
-        self.password_length.trace_add("write", lambda *args: self.length_label.configure(text=str(self.password_length.get())))
+    if not is_valid_amount(amount_str):
+        messagebox.showerror("Ошибка ввода", "Пожалуйста, введите положительное число в поле суммы.")
+        return
 
-        # Чекбоксы
-        ttk.Checkbutton(settings_frame, text="Цифры (0-9)", variable=self.use_digits).grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Checkbutton(settings_frame, text="Буквы (A-Z, a-z)", variable=self.use_letters).grid(row=1, column=1, sticky="w", pady=5)
-        ttk.Checkbutton(settings_frame, text="Спецсимволы (!@#$%^&* и др.)", variable=self.use_symbols).grid(row=1, column=2, sticky="w", pady=5)
+    amount = float(amount_str)
+    rate = get_exchange_rate(from_cur, to_cur)
 
-        # Кнопка генерации
-        self.generate_btn = ttk.Button(settings_frame, text="Сгенерировать пароль", command=self.generate_password)
-        self.generate_btn.grid(row=2, column=0, columnspan=3, pady=10)
+    if rate is not None:
+        result = amount * rate
+        result_label.config(text=f"Результат: {result:.2f} {to_cur}")
 
-        # Поле для отображения сгенерированного пароля
-        self.password_var = tk.StringVar()
-        password_entry = ttk.Entry(self.root, textvariable=self.password_var, font=("Courier", 12), state="readonly")
-        password_entry.pack(fill="x", padx=10, pady=5)
+        # Сохраняем в историю
+        save_history({
+            "from": from_cur,
+            "to": to_cur,
+            "amount": amount,
+            "result": result,
+            "rate": rate
+        })
+        update_history_table()
 
-        # Кнопка копирования в буфер обмена
-        copy_btn = ttk.Button(self.root, text="Копировать в буфер", command=self.copy_to_clipboard)
-        copy_btn.pack(pady=5)
+# --- Создание GUI ---
 
-        # Рамка для истории
-        history_frame = ttk.LabelFrame(self.root, text="История паролей", padding=10)
-        history_frame.pack(fill="both", expand=True, padx=10, pady=5)
+root = tk.Tk()
+root.title("Currency Converter")
+root.geometry("600x400")
 
-        # Таблица истории (Treeview)
-        columns = ("password", "length", "digits", "letters", "symbols", "timestamp")
-        self.tree = ttk.Treeview(history_frame, columns=columns, show="headings")
-        self.tree.heading("password", text="Пароль")
-        self.tree.heading("length", text="Длина")
-        self.tree.heading("digits", text="Цифры")
-        self.tree.heading("letters", text="Буквы")
-        self.tree.heading("symbols", text="Спецсимволы")
-        self.tree.heading("timestamp", text="Дата/время")
+# Валюты (можно расширить список)
+CURRENCIES = ["USD", "EUR", "RUB", "GBP", "JPY", "CNY"]
 
-        self.tree.column("password", width=200)
-        self.tree.column("length", width=60)
-        self.tree.column("digits", width=70)
-        self.tree.column("letters", width=70)
-        self.tree.column("symbols", width=100)
-        self.tree.column("timestamp", width=150)
+# Элементы интерфейса
+tk.Label(root, text="Из:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+tk.Label(root, text="В:").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+tk.Label(root, text="Сумма:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
 
-        # Скроллбар для таблицы
-        scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+from_currency = ttk.Combobox(root, values=CURRENCIES)
+to_currency = ttk.Combobox(root, values=CURRENCIES)
+amount_entry = tk.Entry(root)
 
-        # Кнопки управления историей
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(fill="x", padx=10, pady=5)
+from_currency.current(0)  # USD по умолчанию
+to_currency.current(1)     # EUR по умолчанию
 
-        ttk.Button(btn_frame, text="Очистить историю", command=self.clear_history).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Сохранить историю", command=self.save_history).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Загрузить историю", command=self.load_history).pack(side="left", padx=5)
+from_currency.grid(row=0, column=1, padx=10, pady=5)
+to_currency.grid(row=1, column=1, padx=10, pady=5)
+amount_entry.grid(row=2, column=1, padx=10, pady=5)
 
-    def generate_password(self):
-        """Генерация пароля на основе выбранных параметров"""
-        length = self.password_length.get()
-        use_digits = self.use_digits.get()
-        use_letters = self.use_letters.get()
-        use_symbols = self.use_symbols.get()
+convert_button = tk.Button(root, text="Конвертировать", command=convert_currency)
+convert_button.grid(row=3, column=0, columnspan=2, pady=10)
 
-        # Проверка, что выбран хотя бы один тип символов
-        if not (use_digits or use_letters or use_symbols):
-            messagebox.showerror("Ошибка", "Выберите хотя бы один тип символов (цифры, буквы или спецсимволы).")
-            return
+result_label = tk.Label(root, text="Результат: ", font=("Arial", 12))
+result_label.grid(row=4, column=0, columnspan=2, pady=5)
 
-        # Проверка минимальной и максимальной длины (от 4 до 32)
-        if length < 4:
-            messagebox.showerror("Ошибка", "Минимальная длина пароля — 4 символа.")
-            return
-        if length > 32:
-            messagebox.showerror("Ошибка", "Максимальная длина пароля — 32 символа.")
-            return
+# Таблица истории
+history_tree = ttk.Treeview(root, columns=("from", "to", "amount", "result"), show="headings")
+history_tree.heading("from", text="Из")
+history_tree.heading("to", text="В")
+history_tree.heading("amount", text="Сумма")
+history_tree.heading("result", text="Результат")
+history_tree.grid(row=5, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
 
-        # Формируем пул символов
-        chars = ""
-        if use_digits:
-            chars += string.digits
-        if use_letters:
-            chars += string.ascii_letters
-        if use_symbols:
-            chars += "!@#$%^&*()_+-=[]{}|;:,.<>?/`~"
+# Загрузка истории при старте
+update_history_table()
 
-        # Гарантируем, что в пароле будут символы из каждого выбранного набора
-        password_parts = []
-        if use_digits:
-            password_parts.append(random.choice(string.digits))
-        if use_letters:
-            password_parts.append(random.choice(string.ascii_letters))
-        if use_symbols:
-            password_parts.append(random.choice("!@#$%^&*()_+-=[]{}|;:,.<>?/`~"))
+# Настройка размеров сетки
+root.grid_rowconfigure(5, weight=1)
+root.grid_columnconfigure(1, weight=1)
 
-        # Добираем остальные символы
-        remaining_length = length - len(password_parts)
-        for _ in range(remaining_length):
-            password_parts.append(random.choice(chars))
-
-        # Перемешиваем, чтобы гарантированные символы не были только в начале
-        random.shuffle(password_parts)
-        password = "".join(password_parts)
-
-        # Отображаем пароль
-        self.password_var.set(password)
-
-        # Добавляем в историю
-        import time
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        entry = {
-            "password": password,
-            "length": length,
-            "digits": use_digits,
-            "letters": use_letters,
-            "symbols": use_symbols,
-            "timestamp": timestamp
-        }
-        self.history.append(entry)
-        self.save_history()  # автоматически сохраняем при генерации
-        self.refresh_history_table()
-
-    def copy_to_clipboard(self):
-        """Копирование текущего пароля в буфер обмена"""
-        password = self.password_var.get()
-        if password:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(password)
-            messagebox.showinfo("Информация", "Пароль скопирован в буфер обмена.")
-        else:
-            messagebox.showwarning("Предупреждение", "Сначала сгенерируйте пароль.")
-
-    def refresh_history_table(self):
-        """Обновление таблицы истории"""
-        # Очищаем таблицу
-        for row in self.tree.get_children():
-            self.tree.delete(row)
-
-        # Заполняем заново
-        for entry in reversed(self.history):  # новые сверху
-            self.tree.insert("", "end", values=(
-                entry["password"],
-                entry["length"],
-                "Да" if entry["digits"] else "Нет",
-                "Да" if entry["letters"] else "Нет",
-                "Да" if entry["symbols"] else "Нет",
-                entry["timestamp"]
-            ))
-
-    def save_history(self):
-        """Сохранение истории в JSON-файл"""
-        try:
-            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось сохранить историю: {e}")
-
-    def load_history(self):
-        """Загрузка истории из JSON-файла"""
-        if not os.path.exists(HISTORY_FILE):
-            self.history = []
-            return
-
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                self.history = json.load(f)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось загрузить историю: {e}")
-            self.history = []
-
-    def clear_history(self):
-        """Очистка истории (с подтверждением)"""
-        if messagebox.askyesno("Подтверждение", "Вы уверены, что хотите очистить всю историю?"):
-            self.history = []
-            self.save_history()
-            self.refresh_history_table()
-            messagebox.showinfo("Информация", "История очищена.")
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = PasswordGeneratorApp(root)
-    root.mainloop()
+root.mainloop()
